@@ -1,7 +1,13 @@
+#require these packages
 library(shiny)
 library(plotly)
+
+
+#create UI
 function(req) {
+  #using fluid page type
   fluidPage(titlePanel(" Schedule Analyzer"),
+            #sidebar contains sliders, warning, file input, analyze button
             sidebarLayout(
               sidebarPanel(
                 "Please remember this tool is not perfect. Go through each item and make adjustments if something seems off",
@@ -13,10 +19,9 @@ function(req) {
                     "text/comma-separated-values,text/plain",
                     ".csv"
                   )
-                ),
-                fileInput(
-                  "oldfile",
-                  "Input yesterday's unpainted parts csv",
+                ),fileInput(
+                  "oldSchedule",
+                  "import yesterday's schedule for cross referencing",
                   accept = c(
                     "text/csv",
                     "text/comma-separated-values,text/plain",
@@ -36,14 +41,14 @@ function(req) {
                 actionButton("analyze", "Analyze"),
                 width = 2
               ),
+              #main panel has tabs for dashboard, schedule, parts not done today, and graph
               mainPanel(
                 tabsetPanel(
                   type = 'tabs',
                   tabPanel("Dashboard", tableOutput('dashboard')),
                   tabPanel(
                     "Scheduled Parts",
-                    DT::dataTableOutput('exp_name_table'),
-                    downloadButton("downloadData", "Download")
+                    DT::dataTableOutput('exp_name_table')
                   ),
                   tabPanel(
                     "Parts to do later",

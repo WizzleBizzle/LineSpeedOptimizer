@@ -1,28 +1,36 @@
+
+#define 3rd party libraries this program needs to run
 library(shiny)
 library(readr)
 library(ggplot2)
 library(lubridate)
 library(dplyr)
+library(tidyverse)
 library(DT)
 library(yaml)
 library(plotly)
+library(R6)
+
+#define entire file as shiny function for deployment
 function(input, output) {
+  
+  #CalcTimeChange is the function that implements Will's density function
   CalcTimeChange <- function(density, speed) {
     prod_time = (2.4 * (1 / density) / speed) * 60
     return(prod_time)
   }
   
-  # Read the CSV file
-  #troubleshooting manual testing code
-  #csv <- read_csv("6_1929.csv", trim_ws = FALSE, skip = 9); csv <- csvFormat(csv)
-  
+  #this function reads a Raw DOM and formats it for optimization
+  #I couldn't find a more efficient way to do it, so everything is hard coded
   csvFormat <- function(csv) {
+    
+    #Remove rows that contain no useful data
     csv <- csv[-grep("@@", csv$`Order!Count`),]
     csv <- csv[-grep("##", csv$`Order!Count`),]
     csv <- csv[-grep("Order!Count", csv$`Order!Count`),]
     
       
-    
+    #remove parts that don't need to be painted based on group
     if (length(grep("DSR-ATL-EXT", csv$`Group`)) > 0) {
       csv <- csv[-grep("DSR-ATL-EXT", csv$`Group`),]
     }
@@ -32,6 +40,8 @@ function(input, output) {
     if (length(grep("GRD ATL-SMD", csv$`Group`)) > 0) {
       csv <- csv[-grep("GRD ATL-SMD", csv$`Group`),]
     }
+    
+    #remove parts that don't need to be painted by model
     if (length(grep("GRD-", csv$`Model`)) > 0) {
       csv <- csv[-grep("GRD-", csv$`Model`),]
     }
@@ -45,24 +55,34 @@ function(input, output) {
       csv <- csv[-grep("MILL", csv$Finish),]
     }
 
+    #remove parts that have already been painted and scanned into system
     if (length(grep("Final Assembly", csv$`Station`)) > 0) {
       csv <- csv[-grep("Final Assembly", csv$`Station`),]
     }
     if (length(grep("Paint Line", csv$`Station`)) > 0) {
       csv <- csv[-grep("Paint Line", csv$`Station`),]
     }
+    
+    #remove parts that are on hold
     if (length(grep("Hold", csv$`Status`)) > 0) {
       csv <- csv[-grep("Hold", csv$`Status`),]
     }
     
+    #touch up painting is done manually and thus don't need to be rehung
     if (length(grep("TUP", csv$`Model`)) > 0) {
       csv <- csv[-grep("TUP", csv$`Model`),]
     }
 
+    #add new columns that will assist with optimization: Fixed cone, speed, shift #,
+    #and part density
     csv <- cbind(csv, FC = grepl("FC", csv$Description))
     csv <- cbind(csv, Speed = 1)
     csv <- cbind(csv, Shift = 0)
     csv <- cbind(csv, Density = 1)
+    
+    #This is the ugliest part of the code: manually assign speeds densities to every part
+    #If you're editing this, ensure that some of the more generic catches don't overwrite more specific ones
+    #e.g do '530' before '530ff', as the other order will remove the 530ff's information 
     csv[grep("PERF", csv$`Group`), 'Speed'] <- 28
     csv[grep("PIB", csv$`Model`), 'Speed'] <- 28
     
@@ -134,11 +154,15 @@ function(input, output) {
     csv[grep("FC", csv$`Description`), 'Speed'] <- 12
     csv[grep("FC", csv$`Description`), 'Density'] <- 2
     
+    #for loop to enter in ascd's information
     for (i in grep("ASCD-", csv$`Model`)) {
       if (csv$FC[i]) {
         csv[i, 'Speed'] <- 14
       }
     }
+    
+    
+    #more hard coded speeds and density
     csv[grep("ASPD", csv$`Model`), 'Speed'] <- 28
     
     csv[grep("LBP", csv$`Model`), 'Speed'] <- 28
@@ -180,18 +204,26 @@ function(input, output) {
     csv[grep("SDR", csv$`Model`), 'Speed'] <- 28
     csv[grep("SDR", csv$`Model`), 'Density'] <- 2
     
+    
+    #set color speeds to 5. this is 'tried' to ensure the program doesn't stop
+    #if there are no colored parts in the dom
+    
     try(csv[-which(csv$Finish == "B12"), 'Speed'] <- 5)
+    
+    #assign time til due and prod time columns
     csv <- cbind(csv, ttd = 0)
     csv <- cbind(csv, prod_time = 0)
     
+    #calculate time til due and prod time (not adjusted for density yet)
     for (i in 1:nrow(csv)) {
       csv[i, "ttd"] <-
         as.numeric(as.Date(csv$`Due!Date`[i], format = "%m/%d/%y")) - as.numeric(Sys.Date())
       csv[i, "prod_time"] <- 60 / (csv[i, 'Speed'] / 2.4)
     }
+    #convert qty to numeric vs character
     csv[, "Qty"] <- as.numeric(csv[, "Qty"])
     
-    #perf id
+    #Define parts considered 'Perf' as such
     csv <- cbind(csv, isPerf = F)
     csv[grep('SCD', csv$'Group'), 'isPerf'] <- T
     csv[grep('PERF', csv$'Group'), 'isPerf'] <- T
@@ -204,15 +236,22 @@ function(input, output) {
     csv[grep("PDSP", csv$`Model`), 'isPerf'] <- T
     csv[grep("PDMC", csv$`Model`), 'isPerf'] <- T
     
+    #remove model and rev number from parts
     csv$Model <- gsub('-.*','',csv$Model)
+    
+    #add /FC to fixed cone parts
     csv[grep(TRUE, csv$FC), 'Model'] <-
       paste0(csv[grep(TRUE, csv$FC), 'Model'], "/FC")
+    
+    #add paint type to parts that aren't b12, 'tried' in case there are none
     try(csv[-which(csv$Finish == "B12"), 'Model'] <-
           paste0(csv[-which(csv$Finish == "B12"), 'Model'], "/", csv[-which(csv$Finish ==
                                                                               "B12"), 'Finish']))
     
     # csv <- na.omit(csv[,c('ttd' , 'Due!Date','Ack.!Date' , 'Model' , 'Speed' , 'prod_time' , 'isPerf' ,
     #                       'Type' , 'Shift' ,'Finish' , 'Density', 'Qty')])
+    
+    #aggregate csv based on important values. this is crucial to decrease processing time
     csv <-
       aggregate(
         Qty ~ `ttd` + `Due!Date`+`Ack.!Date` + `Model` + `Speed` + `prod_time` + `isPerf` +
@@ -221,7 +260,10 @@ function(input, output) {
         FUN = sum
       )
     
+    #set min ttd to 0. must do this to make critical ratio work properly
     csv[,'ttd'] <- csv[,'ttd'] - min(csv[,'ttd'])
+    
+    #adjust ttd for quick ship parts such that they have a high priority if due the same day, much less if not
     for(i in grep('Q',csv$Type)){
       csv$ttd[i]= (as.numeric(as.Date(csv$`Ack.!Date`[i], format = "%m/%d/%y"))-as.numeric(Sys.Date()))
       if(csv$ttd[i]>0){
@@ -232,15 +274,32 @@ function(input, output) {
     
     
     # csv<- csv[-grep("B12",csv$Finish),]
+    
+    #output the csv
     return(csv)
   }
+  csvMerge <- function(csv,complete){
+    
+    test <- full_join(csv,complete, by = c('Model'='model','Type'='Type','Due!Date'="Due_Date",'Ack.!Date'="Ack_Date", 'Finish' = 'Finish', 'isPerf' = 'isPerf')) %>% mutate(Qty = replace_na(Qty, 0) - replace_na(qty, 0))
+    
+    test <-
+      aggregate(
+        Qty ~ `ttd` + `Due!Date`+`Ack.!Date` + `Model` + `Speed` + `prod_time` + `isPerf` +
+          `Type` + `Shift` + `Finish` + `Density`,
+        data = test,
+        FUN = sum
+      )
+    return(test)
+    
+  }
   
-  
+  #function assigns small penalty for line speed changes
   TimeChangePenalty <- function(curspeed, model, Line_Speeds) {
     return(abs(curspeed - Line_Speeds[model]))
   }
   
-  
+  #base critical value function, generates default prioritization of parts based on 
+  # ttd and time to complete
   CritValueBase <-
     function(qty,
              speed,
@@ -261,6 +320,7 @@ function(input, output) {
   # default_time = as.POSIXct("2023-06-16 06:15:00 EDT");
   # pessimism = 1;
   
+  #main function. very convoluted, but this function is where the hard math is done
   main <-
     function(csv,
              TimeInDay = 57600,
@@ -269,6 +329,8 @@ function(input, output) {
              default_time = as.POSIXct("2023-06-16 06:15:00 EDT"),
              pessimism = 1) {
       
+      #define variables that will help with math later. first shift, start time,
+      # current part, current speed, current paint type, minimum time til due, and downtime
       Shift = 1
       start_time = Current_Time
       Current_Part = "na"
@@ -277,14 +339,16 @@ function(input, output) {
       min_ttd = min(csv$ttd)
       downtime = Current_Time %% 7200
       
-      
+      #define date (not time) of default time to be today
       date(default_time) <- Sys.Date()
       
+      #initialize schedule
       Schedule = data.frame(
         model = c("model"),
         Type = c(0),
         line_Speed = c(0),
         Due_Date = c(0),
+        Ack_Date = c(0),
         qty = c(0),
         start_time = default_time,
         end_time = default_time,
@@ -293,16 +357,25 @@ function(input, output) {
         Finish = 'B12'
       )
       
+      #first loop to solve optimization problem: this finds the most important parts
+      #that must be done today and gathers them all up
+      #this does NOT generate the best order to hang them in
       while (Current_Time < TimeInDay && sum(csv$Qty) > 0) {
+        
+        #make impossible values that will be overwritten each iteration
         Crit = 9999999999999
         delay = 0
-        
         bestmodel = -1
         
+        #for loop that checks every possible part in csv to see if it should be prioritized
+        #uses base critical value, and weights heavily towards quick ships due the day of being
+        #selected. quick ships due the day of should probably be hard coded to be selected,
+        # and I'd put that as a reasonably high priority improvement to make, as some could theoretically slip
+        #through the cracks
         for (i in 1:nrow(csv)) {
           
           if (csv$Qty[i] > 0) {
-            
+            #find crit of part that for loop is currently on
             newCrit = CritValueBase(
               qty = csv$Qty[i],
               speed = csv$Speed[i],
@@ -311,11 +384,13 @@ function(input, output) {
               Current_Time = Current_Time,
               ttd = csv$ttd[i]
             )
-            
+            #weight it if it's a quick ship due today
             if(grepl('Q',csv$`Type`[i])&&csv$ttd[i]<=0){
-              newCrit = newCrit/2
+              newCrit = -1
             }
             
+            #if the current crit val is better than the previous best crit val, the current
+            #possible selection becomes the best part
             if (newCrit < Crit) {
               bestmodel = i
               
@@ -325,23 +400,29 @@ function(input, output) {
         }
           
         }
+        #for loop ends with best part selected
         
+        #update shift as needed
         if (Current_Time > (TimeInDay / 2)) {
           Shift = 2
           
         }
+        #adjust time in day based on Will's density function and pessimism/optimism
         timeAdj = csv$Qty[bestmodel] * CalcTimeChange(csv[bestmodel, 'Density'], csv[bestmodel, "Speed"])*pessimism
         
+        #downtime added if color swap happens
         if (current_Paint != csv$Finish[bestmodel]) {
           current_Paint = csv$Finish[bestmodel]
           timeAdj = timeAdj + 5 * 60
         }
         
-        
+        #set current part, speed, and paint to new model type
         Current_Part = csv$Model[bestmodel]
         Current_Speed = csv$Speed[bestmodel]
         current_Paint = csv$Finish[bestmodel]
         downtime = downtime + timeAdj
+        
+        #add scheduled downtime as normal
         if (downtime > 7200) {
           timeAdj = timeAdj + 10 * 60
           #delay = delay + 5*60
@@ -349,23 +430,16 @@ function(input, output) {
           
         }
         
-        check1 = c(csv$`Model`[bestmodel], csv$`Type`[bestmodel], csv$`Due!Date`[bestmodel])
-        check2 = c(Schedule[nrow(Schedule), 1], Schedule[nrow(Schedule), "Type"], Schedule[nrow(Schedule), "Due_Date"])
+        #this is a convoluted code section, but in short it creates a new csv with only the parts to do for the day.
+        #it's a holdover from a time when the code only used one while loop, and it works so
+        #I don't care enough to change it
         
-        if (all(check1 %in% check2)) {
-          Schedule[nrow(Schedule), 5] = Schedule[nrow(Schedule), 5] + 1
-          
-          Schedule[nrow(Schedule), 'end_time'] = Schedule[nrow(Schedule), 'end_time'] +
-            timeAdj
-          
-          Schedule[nrow(Schedule), 'duration_Seconds'] = Schedule[nrow(Schedule), 'duration_Seconds'] +
-            (timeAdj)
-        } else {
           new = data.frame(
             model = csv$`Model`[bestmodel],
             Type = csv$Type[bestmodel],
             line_Speed = csv$Speed[bestmodel],
             Due_Date = csv$`Due!Date`[bestmodel],
+            Ack_Date = csv$`Ack.!Date`[bestmodel],
             qty = csv$Qty[bestmodel],
             start_time = (Schedule[nrow(Schedule), 'end_time']) +
               delay,
@@ -375,22 +449,33 @@ function(input, output) {
             Finish = csv$Finish[bestmodel]
           )
           Schedule[nrow(Schedule) + 1, ] <- new
-        }
+        #remove part from option once it's been finished by setting qty to 0
         csv$Qty[bestmodel] <- 0
+        
+        #advance time by delay and time adj (production time)
         Current_Time = Current_Time + timeAdj + delay
         
         
       }
+      #end while loop
       
+      #now things get weird
+      #this is another while loop that sorts the data gathered above to ensure that 
+      #parts are done in a better order each day
       
+      #schedule is edited for use, rounding seconds and removing errant row always created
+      #during initialization
       Schedule[, 'duration_Seconds'] <- round(Schedule[, 'duration_Seconds'])
       Schedule <- Schedule [-1,]
       rownames(Schedule) <- 1:nrow(Schedule)
+      
+      #sorted schedule is initialized, and will be the eventual result of the loop
       Sorted_Schedule = data.frame(
         model = c("model"),
         Type = c(0),
         line_Speed = c(0),
         Due_Date = c(0),
+        Ack_Date = c(0),
         qty = c(0),
         start_time = default_time,
         end_time = default_time,
@@ -398,39 +483,66 @@ function(input, output) {
         isPerf = F,
         Finish = 'B12'
       )
+      
+      #temp schedule is made to not destroy original 'schedule' csv
       Schedule_temp <- Schedule
-      #sort function here
+      
+      #initializing a bunch of needed variables for sort function
       sort_time = start_time
       print(paste0('start time: ', sort_time))
       Finish='B12'
       speed = 1
       model = 'na'
+      
+      #sort loop begins
       for (i in 1:nrow(Schedule)){
+        
+        #same idea as while loop, but only uses line speed instead of critical value
+        
+        #initialize important values with impossible numbers
         best_index = -1
         best_val = -1
 
 
 
         for(i in 1:nrow(Schedule_temp)){
-          if((Schedule_temp$isPerf[i]==(cospi((sort_time / 7200)-0.5)>0))||length(grep(T,Schedule_temp$isPerf))==0||length(grep(F,Schedule_temp$isPerf))==0){}
+          
+          
+          
+          #this if isn't used, but was an option I made for sorting. leaving it in as you may get some use out of it
+          #I don't entirely remember what it was for, only that the way I currently have it was better
+          #if((Schedule_temp$isPerf[i]==(cospi((sort_time / 7200)-0.5)>0))||length(grep(T,Schedule_temp$isPerf))==0||length(grep(F,Schedule_temp$isPerf))==0){}
+          
+          #cur val is just line speed for part
           cur_val = (Schedule_temp$line_Speed[i])
           
+          #make Q's happen asap
           if(grepl('Q',Schedule_temp$Type[i])){
             cur_val = cur_val*6
           }
           
+          #if a part is being hung, weight towards hanging all of that type
           if(model==Schedule_temp$model[i]){
             cur_val <- cur_val*2
           }
+          
+          #fudge value to make parts due first done first, but not great enough change to effect much except tie breaking
           cur_val = cur_val -(as.numeric(as.Date(Schedule_temp$`Due_Date`[i], format = "%m/%d/%y"))- as.numeric(Sys.Date()))/10
           
+          #fudge value to make schedule change line speed less dramatically
           cur_val = cur_val/(1+TimeChangePenalty(speed,i,Schedule_temp$line_Speed)/10)
           
+          #the cospi math represents the desire to swap between 'Perf' and not 'perf every two ish hours
+          #whenever you see it, remember that it's just the perf weight
           if (Schedule_temp$isPerf[i]) {cur_val <- cur_val * (((cospi((sort_time / 7200) - 0.5) / 2) + 1)^4)}
+          
+          #color paint usually happens later in day, this function makes that happen using a scaling weight over time
           if(Schedule_temp$Finish[i]!='B12'){
-            
             cur_val <- cur_val /((25200/sort_time)^4)
           }
+          
+          #if you're doing paint, do all of that paint type at once. this function
+          #is that idea in code
           if(Finish != 'B12'){
             if(Finish != Schedule_temp$Finish[i]){
               cur_val <- cur_val/10
@@ -438,12 +550,16 @@ function(input, output) {
             if(Schedule_temp$Finish[i]== 'B12'){cur_val = cur_val/10}
           }
           
+          #at the end of all that, it sees if the current value is greater than the 
+          #best value (note the change from before, higher is better now)
           if(best_val<cur_val){
             best_val <- cur_val
             best_index = i
           }
           }
         #}
+        
+        #then record all the data and delete it from the temp schedule
         model = Schedule_temp$model[best_index]
         Finish = Schedule_temp$Finish[best_index]
         speed = Schedule_temp$line_Speed[best_index]
@@ -455,16 +571,20 @@ function(input, output) {
       
       
       
-      
+      #remove the initialization data from the sorted schedule, run the 'pivot' function
+     # to recalculate times, and reorder the names
       Sorted_Schedule <- Sorted_Schedule[-1,]
       Sorted_Schedule <- pivot(Sorted_Schedule)
       rownames(Sorted_Schedule) <- 1:nrow(Sorted_Schedule)
-      csv <- csv[-which(csv$Qty == 0), ]
+     
+      #remove 0 qty rows from csv, for use in 'parts to do' table
+       csv <- csv[-which(csv$Qty <= 0), ]
       
-      
-      
+       #return sorted schedule and 'parts still to do'
       return(list(Sorted_Schedule, csv))
     }
+  
+  #pivoting functionality, allows recalculating start and end time of parts
   pivot <- function(csv) {
     csv$start_time <- min(csv$start_time)
     
@@ -478,39 +598,41 @@ function(input, output) {
     return(csv)
   }
   
-  
+  #shiny is weird, but all this is to actually generate an interactive GUI
+  #I will explain it as best as I can
   observeEvent(input$analyze, {
+    #only do anything if a file has been input into gui
     req(input$file)
     
+    #read csv, skipping faulty info found in DOMS
     csv <- read_csv(input$file$datapath, trim_ws = FALSE, skip = 9)
+    
+    #format csv
     csv <- csvFormat(csv)
     
-    if (!is.null(input$oldfile)) {
-      olddata <- read_csv(input$oldfile$datapath)
-      olddata <- olddata[, -1]
-      if (ncol(olddata) != 11) {
-        olddata <-
-          read_csv(input$oldfile$datapath,
-                   trim_ws = FALSE,
-                   skip = 9)
-        olddata <- csvFormat(olddata)
-      }
+    #legacy data, can safely ignore
+    if (!is.null(input$oldSchedule)) {
+      olddata <- read_csv(input$oldSchedule$datapath)
+      csv <- csvMerge(csv,olddata)
       
-      csv <- rbind(csv, olddata)
     }
+    #end ignore
     
-    # Run your R script on the data
-    # Replace 'your_function' with the function that processes the data and creates the schedule
+    # begin to run your R script on the data
+    #set default time to today at 6:00 AM
     default_time = as.POSIXct("2023-06-16 06:00:00 EDT")
     date(default_time) <- Sys.Date()
     
+    #set time zone
     cur_time <-
       (as.numeric(difftime(
         with_tz(Sys.time(), 'America/New_York'), default_time
       ), units = "secs"))
-    
-    # Display the schedule in the main panel
+    #convert input sliders to time in day in seconds
     TimeInDay = (input$slider + 0.5) * 3600 * input$shiftAmt
+    
+    #two ways to run main, either using current time or not
+    #after this runs, the schedule has been made
     if (input$curTime) {
       data <-
         main(
@@ -528,31 +650,53 @@ function(input, output) {
                    pessimism = input$pessimism)
     }
     
+    #get schedule and todo from main's data output
     table <- data[[1]]
     todo <- data[[2]]
     
+    #very very confusing as shiny is weird, but this will make the start and end time
+    #show up properly
+    #we're making a new variable with it as another section of code needs them
+    #unformatted
     stuff <- table
     stuff$start_time <- format(table$start_time, "%H:%M:%S")
     stuff$end_time <- format(table$end_time, "%H:%M:%S")
     
+    #define stuff(the formatted schedule) as 'reactive' under the new name
+    #exp_name_table. this will be useful for drag and drop later
     exp_name_table <- reactive({
       stuff
     })
     
+    #render the formatted schedule.
+    #the row reorder and callback JS is to allow for drag and drop functionality
+    #it's not going to get any less simple, apologies
+    #I barely understand how I managed to get this to work
+    #note that this function is called again under the row reordering event below
     output$exp_name_table <- DT::renderDataTable({
       exp_name_table()
-    }, selection = 'none', editable = F, extensions = 'RowReorder', options =
+    },selection = 'single', editable = T, extensions = c('RowReorder','Buttons'), options =
       list(
         pageLength = nrow(table),
-        dom = 'ltp',
-        rowReorder = T,
-        order = list(c(0, 'asc'))
+        dom = 'ltBp',buttons = c(
+          "csv"
+        ),
+        rowReorder = T
       ), callback = JS(
         "table.on('row-reorder', function(e, details, changes) {
        Shiny.onInputChange('exp_name_table_row_reorder', JSON.stringify(details));
     });"
       ))
+    
+    #define the order of the sorted table as a reactive value
+    
     file_order <- reactiveVal(value = seq(1, nrow(table)))
+    
+    #on drag and drop event happening, do all this stuff 
+    #I wish I could better explain, but much of this code was copied over
+    #and shoehorned into working
+    #in short, it reorders the table and gui, and then completely regenerates them,
+    #running the pivot function before finally re displaying them
     observeEvent(input$exp_name_table_row_reorder, {
       info <- input$exp_name_table_row_reorder
       if (is.null(info) | class(info) != 'character') {
@@ -584,6 +728,7 @@ function(input, output) {
       rownames(table) <- seq(1, nrow(table))
       table <- pivot(table)
       
+      
       stuff <- table
       stuff$start_time <- format(table$start_time, "%H:%M:%S")
       stuff$end_time <- format(table$end_time, "%H:%M:%S")
@@ -593,10 +738,12 @@ function(input, output) {
       })
       output$exp_name_table <- DT::renderDataTable({
         exp_name_table()
-      }, selection = 'none', editable = F, extensions = 'RowReorder', options =
+      },selection = 'single', editable = T, extensions = c('RowReorder','Buttons'), options =
         list(
           pageLength = nrow(table),
-          dom = 'ltp',
+          dom = 'ltBp',buttons = c(
+            "csv"
+          ),
           rowReorder = T
         ), callback = JS(
           "table.on('row-reorder', function(e, details, changes) {
@@ -636,6 +783,8 @@ function(input, output) {
     
     
     
+    
+    #generate todo table
     output$TODO <-
       DT::renderDataTable(
         data.frame(
@@ -650,6 +799,8 @@ function(input, output) {
         editable = F,
         options = list(pageLength = nrow(todo), dom = 'ltp')
       )
+    #generate plot
+    #note that this function is called under the row reordering event above
     output$plot <- renderPlotly({
       g <-
         ggplot(table,
@@ -677,10 +828,13 @@ function(input, output) {
       ggplotly(g, tooltip = c('x', 'y', 'group', 'label', 'text'))
     })
     
+    #calculate parts per hour
     pphtime <-
       (as.numeric(difftime(
         max(data[[1]]$end_time), min(data[[1]]$start_time)
       ), units = "hours"))
+    
+    #generate dashboard info
     dashboard <-
       data.frame(
         Parts_per_Hour = sum(table$qty) / (pphtime),
@@ -689,15 +843,11 @@ function(input, output) {
       )
     colnames(dashboard) <-
       c("Parts Per Hour", 'Parts to Produce', 'Parts to do Tomorrow')
+    
+    #render dashboard
     output$dashboard <- renderTable(dashboard)
-    output$downloadData <- downloadHandler(
-      filename = function() {
-        paste("schedule-", Sys.Date(), ".csv", sep = "")
-      },
-      content = function(file) {
-        write.csv(table, file)
-      }
-    )
+    
+    #assign functionality to download button for stuff to do tomorrow
     output$downloadTODO <- downloadHandler(
       filename = function() {
         paste("unpainted_parts_", Sys.Date(), ".csv", sep = "")
