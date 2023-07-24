@@ -31,10 +31,16 @@ function(req) {
                 tags$hr(),
                 sliderInput("slider", "shift length", 4, 10, 8, 1),
                 sliderInput("shiftAmt", "# of shifts", 1, 2, 2, 1, ticks = F),
-                sliderInput("pessimism", "Adjust paint time multiplier", 0.5, 2, 1, 0.1, ticks = T),
+                sliderInput("pessimism", "Adjust paint time multiplier", 0.5, 2, 0.9, 0.1, ticks = T),
                 checkboxInput(
                   'curTime',
                   'Use Current Time of Day?',
+                  value = F,
+                  width = NULL
+                ),
+                checkboxInput(
+                  'tmrw',
+                  'Are you planning for tomorrow?',
                   value = T,
                   width = NULL
                 ),
@@ -48,6 +54,7 @@ function(req) {
                   tabPanel("Dashboard", tableOutput('dashboard')),
                   tabPanel(
                     "Scheduled Parts",
+                    downloadButton("downloadTable", "Download"),
                     DT::dataTableOutput('exp_name_table')
                   ),
                   tabPanel(

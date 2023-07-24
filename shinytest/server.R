@@ -22,15 +22,23 @@ function(input, output) {
   
   #this function reads a Raw DOM and formats it for optimization
   #I couldn't find a more efficient way to do it, so everything is hard coded
-  csvFormat <- function(csv) {
-    
+  csvFormat <- function(csv,tmrw) {
+    date = Sys.Date()
+    if(tmrw){
+      date = date+1
+    }
     #Remove rows that contain no useful data
+    #the grep function will be used a lot in this function, so make sure you
+    #understand it!
     csv <- csv[-grep("@@", csv$`Order!Count`),]
     csv <- csv[-grep("##", csv$`Order!Count`),]
     csv <- csv[-grep("Order!Count", csv$`Order!Count`),]
     
       
     #remove parts that don't need to be painted based on group
+    #note the if statement, this is to ensure the line of code within it
+    #doesn't run if there are no lines to remove
+    #if it were to run, the csv would be corrupted
     if (length(grep("DSR-ATL-EXT", csv$`Group`)) > 0) {
       csv <- csv[-grep("DSR-ATL-EXT", csv$`Group`),]
     }
@@ -42,6 +50,7 @@ function(input, output) {
     }
     
     #remove parts that don't need to be painted by model
+    #note the if statement, included for the same reason as above
     if (length(grep("GRD-", csv$`Model`)) > 0) {
       csv <- csv[-grep("GRD-", csv$`Model`),]
     }
@@ -83,6 +92,8 @@ function(input, output) {
     #This is the ugliest part of the code: manually assign speeds densities to every part
     #If you're editing this, ensure that some of the more generic catches don't overwrite more specific ones
     #e.g do '530' before '530ff', as the other order will remove the 530ff's information 
+    
+    #no if statment needed as this is additive, not subtractive
     csv[grep("PERF", csv$`Group`), 'Speed'] <- 28
     csv[grep("PIB", csv$`Model`), 'Speed'] <- 28
     
@@ -217,7 +228,7 @@ function(input, output) {
     #calculate time til due and prod time (not adjusted for density yet)
     for (i in 1:nrow(csv)) {
       csv[i, "ttd"] <-
-        as.numeric(as.Date(csv$`Due!Date`[i], format = "%m/%d/%y")) - as.numeric(Sys.Date())
+        as.numeric(as.Date(csv$`Due!Date`[i], format = "%m/%d/%y")) - as.numeric(date)
       csv[i, "prod_time"] <- 60 / (csv[i, 'Speed'] / 2.4)
     }
     #convert qty to numeric vs character
@@ -265,7 +276,7 @@ function(input, output) {
     
     #adjust ttd for quick ship parts such that they have a high priority if due the same day, much less if not
     for(i in grep('Q',csv$Type)){
-      csv$ttd[i]= (as.numeric(as.Date(csv$`Ack.!Date`[i], format = "%m/%d/%y"))-as.numeric(Sys.Date()))
+      csv$ttd[i]= (as.numeric(as.Date(csv$`Ack.!Date`[i], format = "%m/%d/%y"))-as.numeric(date))
       if(csv$ttd[i]>0){
         csv$ttd[i] <- csv$ttd[i]*1.5
       }
@@ -278,7 +289,13 @@ function(input, output) {
     #output the csv
     return(csv)
   }
+  
+  
+  #cross referencing function: this uses SQL to cross reference the completed schedule and the
+  #imported DOM file. it subtracts completed parts from the DOM
+  #This is not a great solution, but will hopefully work well enough until scanning is added to Perf
   csvMerge <- function(csv,complete){
+    complete <- complete[grep(TRUE,complete$isPerf),]
     
     test <- full_join(csv,complete, by = c('Model'='model','Type'='Type','Due!Date'="Due_Date",'Ack.!Date'="Ack_Date", 'Finish' = 'Finish', 'isPerf' = 'isPerf')) %>% mutate(Qty = replace_na(Qty, 0) - replace_na(qty, 0))
     
@@ -327,7 +344,8 @@ function(input, output) {
              shiftAmt = 2,
              Current_Time = 900,
              default_time = as.POSIXct("2023-06-16 06:15:00 EDT"),
-             pessimism = 1) {
+             pessimism = 1,
+             tmrw = F) {
       
       #define variables that will help with math later. first shift, start time,
       # current part, current speed, current paint type, minimum time til due, and downtime
@@ -341,6 +359,10 @@ function(input, output) {
       
       #define date (not time) of default time to be today
       date(default_time) <- Sys.Date()
+      if(tmrw){
+        date(default_time) <- Sys.Date()+1
+      }
+      print(default_time)
       
       #initialize schedule
       Schedule = data.frame(
@@ -384,6 +406,9 @@ function(input, output) {
               Current_Time = Current_Time,
               ttd = csv$ttd[i]
             )
+            #slants schedule to choose both perf and non perf parts using sine wave
+            if (csv$isPerf[i]) {newCrit <- newCrit * (((cospi((Current_Time / 7200) - 0.5) / 2) + 1)^10)}
+            
             #weight it if it's a quick ship due today
             if(grepl('Q',csv$`Type`[i])&&csv$ttd[i]<=0){
               newCrit = -1
@@ -534,7 +559,7 @@ function(input, output) {
           
           #the cospi math represents the desire to swap between 'Perf' and not 'perf every two ish hours
           #whenever you see it, remember that it's just the perf weight
-          if (Schedule_temp$isPerf[i]) {cur_val <- cur_val * (((cospi((sort_time / 7200) - 0.5) / 2) + 1)^4)}
+          if (Schedule_temp$isPerf[i]) {cur_val <- cur_val * (((cospi((sort_time / 7200) - 0.5) / 2) + 1)^8)}
           
           #color paint usually happens later in day, this function makes that happen using a scaling weight over time
           if(Schedule_temp$Finish[i]!='B12'){
@@ -608,7 +633,7 @@ function(input, output) {
     csv <- read_csv(input$file$datapath, trim_ws = FALSE, skip = 9)
     
     #format csv
-    csv <- csvFormat(csv)
+    csv <- csvFormat(csv,tmrw = input$tmrw)
     
     #legacy data, can safely ignore
     if (!is.null(input$oldSchedule)) {
@@ -641,13 +666,15 @@ function(input, output) {
           shiftAmt = input$shiftAmt,
           Current_Time = cur_time,
           default_time = with_tz(Sys.time(), 'America/New_York'),
-          pessimism = input$pessimism
+          pessimism = input$pessimism,
+          tmrw = input$tmrw
         )
     } else{
       data <- main(csv,
                    TimeInDay = TimeInDay,
                    shiftAmt = input$shiftAmt,
-                   pessimism = input$pessimism)
+                   pessimism = input$pessimism,
+                   tmrw = input$tmrw)
     }
     
     #get schedule and todo from main's data output
@@ -779,6 +806,15 @@ function(input, output) {
         ggplotly(g, tooltip = c('x', 'y', 'group', 'label', 'text'))
       })
       
+      output$downloadTable <- downloadHandler(
+        filename = function() {
+          paste("Schedule_", Sys.Date(), ".csv", sep = "")
+        },
+        content = function(file) {
+          write.csv(table, file)
+        }
+      )
+      
     })
     
     
@@ -848,6 +884,8 @@ function(input, output) {
     output$dashboard <- renderTable(dashboard)
     
     #assign functionality to download button for stuff to do tomorrow
+    
+    
     output$downloadTODO <- downloadHandler(
       filename = function() {
         paste("unpainted_parts_", Sys.Date(), ".csv", sep = "")
