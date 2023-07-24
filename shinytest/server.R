@@ -817,7 +817,14 @@ function(input, output) {
       
     })
     
-    
+    output$downloadTable <- downloadHandler(
+      filename = function() {
+        paste("Schedule_", Sys.Date(), ".csv", sep = "")
+      },
+      content = function(file) {
+        write.csv(table, file)
+      }
+    )
     
     
     #generate todo table
