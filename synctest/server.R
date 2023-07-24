@@ -4,6 +4,7 @@ library(lubridate)
 library(R6)
 
 # Create a process-level (i.e. in global scope) reactive-value manager.
+#this will allow it to sync between instances
 ValueManager <- R6::R6Class(
   classname = "ValueManager",
   public = list(
@@ -30,16 +31,46 @@ ValueManager <- R6::R6Class(
   )
 )
 
+CurrentPos <- R6::R6Class(
+  classname = 'CurrentPos',
+  public = list(
+    initialize = function(){
+      private$count <- reactiveValues(
+        data=1
+      )
+    },
+    set_value = function(value){
+      private$count$data
+    },
+    get_value = function(){
+      return(private$count$data)
+    }
+  ),
+  private = list(
+    count = NULL
+  )
+)
+
+
+
+
+
 # Instantiate the manager outside the server function..
 value_manager <- ValueManager$new()
+current_count <- CurrentPos$new()
 
-
+#begin server function
 function(input, output, session) {
+  
+  #read csv input
   observeEvent(input$file, {
     csv <- read_csv(input$file$datapath, trim_ws = FALSE)
     
+    #assign csv to R6 object
     value_manager$set_value(csv)
   })
+  
+  #have clock continually tick
   observe({
     output$currentTime <- renderText({
       invalidateLater(1000, session)
@@ -47,26 +78,44 @@ function(input, output, session) {
     })
   })
   
-  
+  #this will update parts as they finish over time
   observe({
-    if(nrow(value_manager$get_value())>0){
-    cur_index <- reactiveVal(1)
     
-    csv <- value_manager$get_value()
-    cur_part <- csv[force_tz(csv$start_time,'America/New_York')<=with_tz(Sys.time(),'America/New_York')
+    if(nrow(value_manager$get_value())>0){
+    
+      #assigns current index to be 'reactive'
+      cur_index <- reactiveVal(1)
+    
+      #retrieves csv from value manager object
+      
+      csv <- value_manager$get_value()
+      
+            #fixes time zone and finds part that should be hung
+      cur_part <- csv[force_tz(csv$start_time,'America/New_York')<=with_tz(Sys.time(),'America/New_York')
                     & force_tz(csv$end_time,'America/New_York')>=with_tz(Sys.time(),'America/New_York'),]
-    cur_index(cur_part$...1)
+      
+      #sets current index to be the current parts' index
+      cur_index(cur_part$...1)
     
     
     
     output$CurrentPart <- renderText({
+      #repeats every second
       invalidateLater(1000, session)
+      
+      #fixes time zone and finds part that should be hung
       cur_part <- csv[force_tz(csv$start_time,'America/New_York')<=with_tz(Sys.time(),'America/New_York')
                       & force_tz(csv$end_time,'America/New_York')>=with_tz(Sys.time(),'America/New_York'),]
+      
+      #updates index
       cur_index(cur_part$...1)
+      
+      #prints current part
       print(paste0('Now Hanging: ', cur_part$model," ", cur_part$Type))
     })
     
+    #html outputs upcoming parts
+    #may be slightly glitchy due to it's dependency on cur index, but works well enough
     output$NextPart <- renderUI({
       invalidateLater(1000, session)
       text3 = ''
@@ -79,6 +128,8 @@ function(input, output, session) {
       }
       HTML(text3)
     })
+    
+    #also prints Due Date for current part, updates every second
     output$DDate <- renderText({
       invalidateLater(1000, session)
       print(paste0('Due Date: ', format(as.Date(csv$`Due_Date`[cur_index()], format ='%m/%d/%Y'), '%B %d') ) )
