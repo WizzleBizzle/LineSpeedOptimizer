@@ -390,7 +390,7 @@ function(input, output) {
       #first loop to solve optimization problem: this finds the most important parts
       #that must be done today and gathers them all up
       #this does NOT generate the best order to hang them in
-      while (Current_Time < TimeInDay && sum(csv$Qty) > 0) {
+      while (Current_Time < TimeInDay-12000 && sum(csv$Qty) > 0) {
         
         #make impossible values that will be overwritten each iteration
         Crit = 9999999999999
