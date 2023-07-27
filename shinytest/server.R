@@ -24,7 +24,9 @@ function(input, output) {
   #I couldn't find a more efficient way to do it, so everything is hard coded
   csvFormat <- function(csv,tmrw) {
     date = Sys.Date()
-    if(tmrw){
+    if(as.POSIXlt(Sys.Date())$wday==5&&tmrw){
+      date=date+3
+    }else if(tmrw){
       date = date+1
     }
     #Remove rows that contain no useful data
@@ -81,6 +83,10 @@ function(input, output) {
     if (length(grep("TUP", csv$`Model`)) > 0) {
       csv <- csv[-grep("TUP", csv$`Model`),]
     }
+    
+    #Remove colors and block out time for them instead
+      csv <- csv[which(csv$Finish == "B12"),]
+    
 
     #add new columns that will assist with optimization: Fixed cone, speed, shift #,
     #and part density
@@ -216,10 +222,7 @@ function(input, output) {
     csv[grep("SDR", csv$`Model`), 'Density'] <- 2
     
     
-    #set color speeds to 5. this is 'tried' to ensure the program doesn't stop
-    #if there are no colored parts in the dom
     
-    try(csv[-which(csv$Finish == "B12"), 'Speed'] <- 5)
     
     #assign time til due and prod time columns
     csv <- cbind(csv, ttd = 0)
@@ -359,9 +362,14 @@ function(input, output) {
       
       #define date (not time) of default time to be today
       date(default_time) <- Sys.Date()
-      if(tmrw){
+      
+      if(as.POSIXlt(Sys.Date())$wday==5&&tmrw){
+        date(default_time) <- Sys.Date()+3
+      }else if(tmrw){
         date(default_time) <- Sys.Date()+1
       }
+      
+      
       print(default_time)
       
       #initialize schedule
@@ -484,6 +492,23 @@ function(input, output) {
       }
       #end while loop
       
+      #as requested by Will, adding in a block of time each day for colors
+      new = data.frame(
+        model = "Colors",
+        Type = "N/A",
+        line_Speed = 5,
+        Due_Date = csv$`Due!Date`[bestmodel],
+        Ack_Date = csv$`Ack.!Date`[bestmodel],
+        qty = 1,
+        start_time = (Schedule[nrow(Schedule), 'end_time']),
+        end_time = (Schedule[nrow(Schedule), 'end_time']),
+        duration_Seconds = 10800,
+        isPerf = F,
+        Finish = "Color"
+      )
+      Schedule[nrow(Schedule) + 1, ] <- new
+      
+      
       #now things get weird
       #this is another while loop that sorts the data gathered above to ensure that 
       #parts are done in a better order each day
@@ -561,19 +586,12 @@ function(input, output) {
           #whenever you see it, remember that it's just the perf weight
           if (Schedule_temp$isPerf[i]) {cur_val <- cur_val * (((cospi((sort_time / 7200) - 0.5) / 2) + 1)^8)}
           
-          #color paint usually happens later in day, this function makes that happen using a scaling weight over time
-          if(Schedule_temp$Finish[i]!='B12'){
-            cur_val <- cur_val /((25200/sort_time)^4)
+          if(sort_time<25200&&Schedule_temp$model[i]=="Colors"){
+            cur_val=-1
+          }else if(sort_time>25200&&Schedule_temp$model[i]=="Colors"){
+            cur_val=9999999999999
           }
-          
-          #if you're doing paint, do all of that paint type at once. this function
-          #is that idea in code
-          if(Finish != 'B12'){
-            if(Finish != Schedule_temp$Finish[i]){
-              cur_val <- cur_val/10
-            }
-            if(Schedule_temp$Finish[i]== 'B12'){cur_val = cur_val/10}
-          }
+        
           
           #at the end of all that, it sees if the current value is greater than the 
           #best value (note the change from before, higher is better now)
@@ -609,7 +627,8 @@ function(input, output) {
       return(list(Sorted_Schedule, csv))
     }
   
-  #pivoting functionality, allows recalculating start and end time of parts
+  #pivoting functionality,  recalculates start and end time of parts
+  #used during the drag and drop operation
   pivot <- function(csv) {
     csv$start_time <- min(csv$start_time)
     
