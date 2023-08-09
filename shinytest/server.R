@@ -444,10 +444,10 @@ function(input, output) {
         timeAdj = csv$Qty[bestmodel] * CalcTimeChange(csv[bestmodel, 'Density'], csv[bestmodel, "Speed"])*pessimism
         
         #downtime added if color swap happens
-        if (current_Paint != csv$Finish[bestmodel]) {
-          current_Paint = csv$Finish[bestmodel]
-          timeAdj = timeAdj + 5 * 60
-        }
+        # if (current_Paint != csv$Finish[bestmodel]) {
+        #   current_Paint = csv$Finish[bestmodel]
+        #   timeAdj = timeAdj + 5 * 60
+        # }
         
         #set current part, speed, and paint to new model type
         Current_Part = csv$Model[bestmodel]
